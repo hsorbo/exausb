@@ -240,38 +240,6 @@ pub fn names_protocol(classid: u8, subclassid: u8, protocolid: u8) -> Option<&'s
 
 // ---------------------------------------------------------------------------
 
-/// Vendor name, or "" if unknown.
-pub fn get_vendor_string(vid: u16) -> String {
-    names_vendor(vid).unwrap_or("").to_string()
-}
-
-/// Product name, or "" if unknown.
-pub fn get_product_string(vid: u16, pid: u16) -> String {
-    names_product(vid, pid).unwrap_or("").to_string()
-}
-
-/// Class name, or "[unknown]".
-pub fn get_class_string(cls: u8) -> String {
-    names_class(cls).unwrap_or("[unknown]").to_string()
-}
-
-/// Subclass name, or "[unknown]".
-pub fn get_subclass_string(cls: u8, subcls: u8) -> String {
-    names_subclass(cls, subcls)
-        .unwrap_or("[unknown]")
-        .to_string()
-}
-
-/// Protocol name, or "".
-pub fn get_protocol_string(cls: u8, subcls: u8, proto: u8) -> String {
-    names_protocol(cls, subcls, proto).unwrap_or("").to_string()
-}
-
-/// Video terminal name, or "".
-pub fn get_videoterminal_string(termt: u16) -> String {
-    names_videoterminal(termt).unwrap_or("").to_string()
-}
-
 /// Get friendly vendor and product names from the name database.  If either
 /// or both are not present, fall back to the device's own strings: from
 /// sysfs where available (Linux, as upstream), otherwise from the device's

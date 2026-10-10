@@ -1,74 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! Misc USB routines.
+//! Reading string descriptors.
 //!
 //! Derived from usbutils' `usbmisc.c` (Copyright (C) 2003 Aurelien Jarno).
 
-use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use crate::sysfs::sanitize;
-use crate::usb::{self, Context, Device, Handle};
-
-const DEVBUSUSB: &str = "/dev/bus/usb";
-
-/// SYMLOOP_MAX is typically 40 on Linux (MAXSYMLINKS).
-const MAX_READLINK_DEPTH: usize = 40;
+use crate::usb::{self, Handle};
 
 /// Timeout libusb uses for its string descriptor helpers.
 const STRING_TIMEOUT: Duration = Duration::from_millis(1000);
-
-/// Follow a chain of symlinks (relative links are resolved against the
-/// directory containing the link).
-fn readlink_recursive(path: &Path) -> PathBuf {
-    let mut path = path.to_path_buf();
-    for _ in 0..=MAX_READLINK_DEPTH {
-        match std::fs::read_link(&path) {
-            Ok(target) if target.is_absolute() => path = target,
-            Ok(target) => {
-                path = match path.parent() {
-                    Some(dir) => dir.join(target),
-                    None => target,
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    path
-}
-
-/// Make a path absolute and lexically remove `.`, `..` and duplicate
-/// slashes, without resolving symlinks.
-fn get_absolute_path(path: &Path) -> PathBuf {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
-    let mut out = PathBuf::from("/");
-    for comp in path.components() {
-        match comp {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(c) => out.push(c),
-            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
-        }
-    }
-    out
-}
-
-/// Find the device corresponding to a `/dev/bus/usb/BBB/DDD` path (or a
-/// symlink to one).
-pub fn get_usb_device(ctx: &Context, path: &str) -> Option<Device> {
-    use rusb::UsbContext;
-
-    let absolute = get_absolute_path(&readlink_recursive(Path::new(path)));
-    let list = ctx.devices().ok()?;
-    list.iter().find(|dev| {
-        let p = format!("{DEVBUSUSB}/{:03}/{:03}", dev.bus_number(), dev.address());
-        Path::new(&p) == absolute
-    })
-}
 
 /// `libusb_get_string_descriptor()`: a raw GET_DESCRIPTOR(STRING) request.
 fn get_string_descriptor(
@@ -167,13 +108,5 @@ mod tests {
         );
         // Unpaired surrogate.
         assert!(usb_string_to_native(&[0x00, 0xd8]).is_none());
-    }
-
-    #[test]
-    fn absolute_path() {
-        assert_eq!(
-            get_absolute_path(Path::new("/dev//bus/./usb/../usb/001/002")),
-            PathBuf::from("/dev/bus/usb/001/002")
-        );
     }
 }

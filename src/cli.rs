@@ -3,358 +3,290 @@
 
 use std::process::ExitCode;
 
+use anstyle::{AnsiColor, Style};
+use clap::{ColorChoice, Parser};
 use rusb::UsbContext;
 
-use crate::names::get_vendor_product_with_fallback;
-use crate::usb::Context;
-use crate::{dump, names, tree, usb, usbmisc};
+use crate::names::{self, get_vendor_product_with_fallback};
+use crate::render::{self, print};
+use crate::usb::{self, Context};
+use crate::{dump, tree};
 
-const USAGE: &str = "\
-Usage: exausb [options]...
-List USB devices
-  -v, --verbose
-      Increase verbosity (show descriptors)
-  -s [[bus]:][devnum]
-      Show only devices with specified device and/or
-      bus numbers (in decimal)
-  -d vendor:[product]
-      Show only devices with the specified vendor and
-      product ID numbers (in hexadecimal)
-  -D device
-      Selects which device exausb will examine
-  -t, --tree
-      Dump the physical USB device hierarchy as a tree
-  -V, --version
-      Show version of program
-  -h, --help
-      Show usage and help
-";
+/// List USB devices.
+#[derive(Parser, Debug)]
+#[command(name = "exausb", version, about)]
+struct Args {
+    /// Show all descriptors of each device
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 
-/// Parsed command line.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Options {
-    verblevel: u32,
-    help: bool,
-    version: bool,
-    treemode: bool,
-    bus: Option<u32>,
-    devnum: Option<u32>,
-    vendor: Option<u32>,
-    product: Option<u32>,
-    devdump: Option<String>,
-    /// Number of errors (unknown options, missing arguments, ...).
-    err: u32,
+    /// Show the physical USB device hierarchy as a tree
+    #[arg(short, long)]
+    tree: bool,
+
+    /// Only show devices with this bus and/or device number (decimal)
+    #[arg(short = 's', value_name = "[[BUS]:][DEVNUM]", value_parser = parse_select)]
+    select: Option<Select>,
+
+    /// Only show devices with this vendor and/or product ID (hex)
+    #[arg(short = 'd', value_name = "VENDOR[:PRODUCT]", value_parser = parse_ids)]
+    ids: Option<Ids>,
+
+    /// When to use colors
+    #[arg(long, value_name = "WHEN", default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 }
 
-/// C `strtoul()`: parse a leading number, ignoring trailing garbage.
-fn strtoul(s: &str, radix: u32) -> u32 {
-    let s = s.trim_start();
-    let s = s.strip_prefix('+').unwrap_or(s);
-    let s = if radix == 16 {
-        s.strip_prefix("0x")
-            .or_else(|| s.strip_prefix("0X"))
-            .unwrap_or(s)
-    } else {
-        s
-    };
-    let digits = s.find(|c: char| !c.is_digit(radix)).unwrap_or(s.len());
-    u64::from_str_radix(&s[..digits], radix).map_or(0, |v| v as u32)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Select {
+    bus: Option<u8>,
+    devnum: Option<u8>,
 }
 
-/// Parse arguments like upstream's `getopt_long(argc, argv, "D:vtP:p:s:d:Vh", ...)`.
-fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Options {
-    const LONG: [(&str, char); 4] = [
-        ("version", 'V'),
-        ("verbose", 'v'),
-        ("help", 'h'),
-        ("tree", 't'),
-    ];
-    const WITH_ARG: &str = "DPpsd";
-    const NO_ARG: &str = "vtVh";
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ids {
+    vendor: Option<u16>,
+    product: Option<u16>,
+}
 
-    let mut opts = Options::default();
-    let mut positional = 0;
-    let mut args = args.into_iter();
-
-    let apply = |opts: &mut Options, c: char, optarg: Option<String>| match c {
-        'V' => opts.version = true,
-        'v' => opts.verblevel += 1,
-        'h' => opts.help = true,
-        't' => opts.treemode = true,
-        's' => {
-            let optarg = optarg.unwrap_or_default();
-            match optarg.split_once(':') {
-                Some((bus, dev)) => {
-                    if !bus.is_empty() {
-                        opts.bus = Some(strtoul(bus, 10));
-                    }
-                    if !dev.is_empty() {
-                        opts.devnum = Some(strtoul(dev, 10));
-                    }
-                }
-                None => {
-                    if !optarg.is_empty() {
-                        opts.devnum = Some(strtoul(&optarg, 10));
-                    }
-                }
-            }
-        }
-        'd' => {
-            let optarg = optarg.unwrap_or_default();
-            match optarg.split_once(':') {
-                Some((vendor, product)) => {
-                    if !vendor.is_empty() {
-                        opts.vendor = Some(strtoul(vendor, 16));
-                    }
-                    if !product.is_empty() {
-                        opts.product = Some(strtoul(product, 16));
-                    }
-                }
-                None => opts.err += 1,
-            }
-        }
-        'D' => opts.devdump = optarg,
-        // -P and -p are accepted by upstream's getopt string but unhandled.
-        _ => opts.err += 1,
-    };
-
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            positional += args.by_ref().count();
-            break;
-        }
-        if let Some(long) = arg.strip_prefix("--") {
-            let (name, value) = match long.split_once('=') {
-                Some((n, v)) => (n, Some(v)),
-                None => (long, None),
-            };
-            // Like getopt_long, accept unambiguous prefixes.
-            let exact = LONG.iter().find(|(l, _)| *l == name);
-            let matches: Vec<_> = LONG.iter().filter(|(l, _)| l.starts_with(name)).collect();
-            let found = exact.or(if matches.len() == 1 {
-                Some(matches[0])
-            } else {
-                None
-            });
-            match found {
-                Some((_, c)) if value.is_none() => apply(&mut opts, *c, None),
-                Some((l, _)) => {
-                    eprintln!("exausb: option '--{l}' doesn't allow an argument");
-                    opts.err += 1;
-                }
-                None if matches.len() > 1 => {
-                    eprintln!("exausb: option '--{name}' is ambiguous");
-                    opts.err += 1;
-                }
-                None => {
-                    eprintln!("exausb: unrecognized option '--{name}'");
-                    opts.err += 1;
-                }
-            }
-        } else if arg.len() > 1 && arg.starts_with('-') {
-            for (pos, c) in arg[1..].char_indices() {
-                if WITH_ARG.contains(c) {
-                    let rest = &arg[1 + pos + c.len_utf8()..];
-                    let optarg = if !rest.is_empty() {
-                        Some(rest.to_string())
-                    } else {
-                        args.next()
-                    };
-                    match optarg {
-                        Some(a) => apply(&mut opts, c, Some(a)),
-                        None => {
-                            eprintln!("exausb: option requires an argument -- '{c}'");
-                            opts.err += 1;
-                        }
-                    }
-                    break;
-                } else if NO_ARG.contains(c) {
-                    apply(&mut opts, c, None);
-                } else {
-                    eprintln!("exausb: invalid option -- '{c}'");
-                    opts.err += 1;
-                }
-            }
+/// Parse `[[bus]:][devnum]`.
+fn parse_select(s: &str) -> Result<Select, String> {
+    let num = |s: &str| -> Result<Option<u8>, String> {
+        if s.is_empty() {
+            Ok(None)
         } else {
-            positional += 1;
+            s.parse()
+                .map(Some)
+                .map_err(|_| format!("invalid number '{s}'"))
         }
+    };
+    match s.split_once(':') {
+        Some((bus, dev)) => Ok(Select {
+            bus: num(bus)?,
+            devnum: num(dev)?,
+        }),
+        None => Ok(Select {
+            bus: None,
+            devnum: num(s)?,
+        }),
     }
-    if positional > 0 {
-        opts.err += 1;
-    }
-    opts
 }
 
-fn dump_one_device(ctx: &Context, path: &str) -> u8 {
-    let Some(dev) = usbmisc::get_usb_device(ctx, path) else {
-        eprintln!("Cannot open {path}");
-        return 1;
+/// Parse `vendor[:product]` (hex, optional `0x`).
+fn parse_ids(s: &str) -> Result<Ids, String> {
+    let hex = |s: &str| -> Result<Option<u16>, String> {
+        let digits = s.trim_start_matches("0x").trim_start_matches("0X");
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            u16::from_str_radix(digits, 16)
+                .map(Some)
+                .map_err(|_| format!("invalid ID '{s}'"))
+        }
     };
-    let desc = usb::device_descriptor(&dev);
-    let (vendor, product) = get_vendor_product_with_fallback(&dev, None);
-    println!(
-        "Device: ID {:04x}:{:04x} {} {}",
-        desc.id_vendor, desc.id_product, vendor, product
-    );
-    dump::dumpdev(&dev);
-    0
+    let (vendor, product) = s.split_once(':').unwrap_or((s, ""));
+    Ok(Ids {
+        vendor: hex(vendor)?,
+        product: hex(product)?,
+    })
 }
 
-fn list_devices(ctx: &Context, opts: &Options) -> u8 {
-    // 1: device not found, 0: device found
-    let mut status = 1;
-
-    let Ok(list) = ctx.devices() else {
-        return status;
-    };
-    let mut devices: Vec<_> = list.iter().collect();
-    devices.sort_by_key(|dev| (dev.bus_number(), dev.address()));
-
-    for dev in devices {
-        let bnum = dev.bus_number();
-        let dnum = dev.address();
-
-        if opts.bus.is_some_and(|b| b != bnum as u32)
-            || opts.devnum.is_some_and(|d| d != dnum as u32)
-        {
-            continue;
-        }
-        let desc = usb::device_descriptor(&dev);
-        if opts.vendor.is_some_and(|v| v != desc.id_vendor as u32)
-            || opts.product.is_some_and(|p| p != desc.id_product as u32)
-        {
-            continue;
-        }
-        status = 0;
-
-        let (vendor, product) = get_vendor_product_with_fallback(&dev, None);
-
-        if opts.verblevel > 0 {
-            println!();
-        }
-        println!(
-            "Bus {:03} Device {:03}: ID {:04x}:{:04x} {} {}",
-            bnum, dnum, desc.id_vendor, desc.id_product, vendor, product
-        );
-        if opts.verblevel > 0 {
-            dump::dumpdev(&dev);
-        }
+impl Args {
+    fn matches(&self, dev: &usb::Device) -> bool {
+        let desc = usb::device_descriptor(dev);
+        let sel = self.select.unwrap_or_default();
+        let ids = self.ids.unwrap_or_default();
+        sel.bus.is_none_or(|b| b == dev.bus_number())
+            && sel.devnum.is_none_or(|d| d == dev.address())
+            && ids.vendor.is_none_or(|v| v == desc.id_vendor)
+            && ids.product.is_none_or(|p| p == desc.id_product)
     }
-    status
+}
+
+fn list(devices: &[usb::Device]) {
+    let rows: Vec<Vec<String>> = devices
+        .iter()
+        .map(|dev| {
+            let desc = usb::device_descriptor(dev);
+            let (vendor, product) = get_vendor_product_with_fallback(dev, None);
+            vec![
+                format!("{:03}", dev.bus_number()),
+                format!("{:03}", dev.address()),
+                format!("{:04x}:{:04x}", desc.id_vendor, desc.id_product),
+                tree::speed_short(usb::device_speed(dev)).to_string(),
+                vendor,
+                product,
+            ]
+        })
+        .collect();
+    let plain = Style::new();
+    print(&render::table(
+        &["BUS", "DEV", "ID", "SPEED", "VENDOR", "PRODUCT"],
+        &rows,
+        &[
+            plain,
+            plain,
+            AnsiColor::Yellow.on_default(),
+            AnsiColor::Green.on_default(),
+            plain,
+            Style::new().bold(),
+        ],
+    ));
 }
 
 /// Run exausb with the process' command line arguments.
 pub fn run() -> ExitCode {
-    // Behave like a C program when the output pipe is closed (`exausb | head`)
-    // instead of panicking in println!.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    let args = Args::parse();
+    anstream::ColorChoice::write_global(match args.color {
+        ColorChoice::Auto => anstream::ColorChoice::Auto,
+        ColorChoice::Always => anstream::ColorChoice::Always,
+        ColorChoice::Never => anstream::ColorChoice::Never,
+    });
 
-    let opts = parse_args(std::env::args().skip(1));
-
-    if opts.version {
-        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
-        return ExitCode::SUCCESS;
-    }
-    if opts.err > 0 || opts.help {
-        eprint!("{USAGE}");
-        return if opts.help && opts.err == 0 {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
-    }
-
-    dump::set_verblevel(opts.verblevel);
-
-    // By default, print names as well as numbers.
     if let Err(e) = names::names_init() {
         eprintln!(
-            "unable to read {}, using the bundled usb.ids: {e}",
+            "exausb: can't read {}, using the bundled usb.ids: {e}",
             names::USB_IDS_ENV
         );
-    }
-
-    if opts.treemode {
-        return ExitCode::from(tree::lsusb_t() as u8);
     }
 
     let ctx = match Context::new() {
         Ok(ctx) => ctx,
         Err(e) => {
-            eprintln!("unable to initialize libusb: {e}");
+            eprintln!("exausb: can't initialize libusb: {e}");
             return ExitCode::FAILURE;
         }
     };
 
-    let status = match &opts.devdump {
-        Some(path) => dump_one_device(&ctx, path),
-        None => list_devices(&ctx, &opts),
+    if args.tree {
+        return match tree::tree(&ctx) {
+            Ok(busses) => {
+                print(&busses.iter().map(render::render).collect::<String>());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("exausb: can't list devices: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let mut devices: Vec<usb::Device> = match ctx.devices() {
+        Ok(list) => list.iter().filter(|d| args.matches(d)).collect(),
+        Err(e) => {
+            eprintln!("exausb: can't list devices: {e}");
+            return ExitCode::FAILURE;
+        }
     };
-    ExitCode::from(status)
+    devices.sort_by_key(|dev| (dev.bus_number(), dev.address()));
+    if devices.is_empty() {
+        // Like lsusb: nothing found is an error.
+        return ExitCode::FAILURE;
+    }
+
+    if args.verbose > 0 {
+        let dumps: Vec<String> = devices
+            .iter()
+            .map(|dev| render::render(&dump::dumpdev(dev)))
+            .collect();
+        print(&dumps.join("\n"));
+    } else {
+        list(&devices);
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
-    fn parse(args: &[&str]) -> Options {
-        parse_args(args.iter().map(|s| s.to_string()))
+    #[test]
+    fn cli_definition() {
+        Args::command().debug_assert();
     }
 
     #[test]
-    fn verbosity_and_flags() {
-        let o = parse(&["-vv", "--verbose", "-t"]);
-        assert_eq!(o.verblevel, 3);
-        assert!(o.treemode);
-        assert_eq!(o.err, 0);
-        assert!(parse(&["--verb"]).verblevel == 1);
-        assert!(parse(&["--ver"]).err > 0); // ambiguous: version/verbose
-        assert!(parse(&["--help"]).help);
+    fn flags() {
+        let a = Args::try_parse_from(["exausb", "-vv", "-t"]).unwrap();
+        assert_eq!((a.verbose, a.tree), (2, true));
+        assert!(Args::try_parse_from(["exausb", "extra"]).is_err());
+        assert!(Args::try_parse_from(["exausb", "-x"]).is_err());
     }
 
     #[test]
-    fn select_bus_dev() {
-        let o = parse(&["-s", "1:2"]);
-        assert_eq!((o.bus, o.devnum), (Some(1), Some(2)));
-        let o = parse(&["-s3:"]);
-        assert_eq!((o.bus, o.devnum), (Some(3), None));
-        let o = parse(&["-s", ":7"]);
-        assert_eq!((o.bus, o.devnum), (None, Some(7)));
-        let o = parse(&["-s", "9"]);
-        assert_eq!((o.bus, o.devnum), (None, Some(9)));
-        let o = parse(&["-vs", "004:010"]);
-        assert_eq!((o.verblevel, o.bus, o.devnum), (1, Some(4), Some(10)));
-    }
-
-    #[test]
-    fn select_vendor_product() {
-        let o = parse(&["-d", "1d6b:0002"]);
-        assert_eq!((o.vendor, o.product), (Some(0x1d6b), Some(2)));
-        let o = parse(&["-d", "0x05ac:"]);
-        assert_eq!((o.vendor, o.product), (Some(0x05ac), None));
-        assert_eq!(parse(&["-d", "1234"]).err, 1);
-    }
-
-    #[test]
-    fn errors() {
-        assert_eq!(parse(&["-x"]).err, 1);
-        assert_eq!(parse(&["-s"]).err, 1);
-        assert_eq!(parse(&["-P", "x"]).err, 1);
-        assert_eq!(parse(&["extra"]).err, 1);
-        assert_eq!(parse(&["--", "-v"]).err, 1);
+    fn select() {
+        let sel = |s| parse_select(s).unwrap();
         assert_eq!(
-            parse(&["-D", "/dev/bus/usb/001/002"]).devdump.as_deref(),
-            Some("/dev/bus/usb/001/002")
+            sel("1:2"),
+            Select {
+                bus: Some(1),
+                devnum: Some(2)
+            }
         );
+        assert_eq!(
+            sel("3:"),
+            Select {
+                bus: Some(3),
+                devnum: None
+            }
+        );
+        assert_eq!(
+            sel(":7"),
+            Select {
+                bus: None,
+                devnum: Some(7)
+            }
+        );
+        assert_eq!(
+            sel("9"),
+            Select {
+                bus: None,
+                devnum: Some(9)
+            }
+        );
+        assert_eq!(
+            sel("004:010"),
+            Select {
+                bus: Some(4),
+                devnum: Some(10)
+            }
+        );
+        assert!(parse_select("x").is_err());
+        assert!(parse_select("300").is_err());
     }
 
     #[test]
-    fn strtoul_like_c() {
-        assert_eq!(strtoul("12abc", 10), 12);
-        assert_eq!(strtoul("abc", 10), 0);
-        assert_eq!(strtoul("0x1F", 16), 0x1f);
-        assert_eq!(strtoul("ffff", 16), 0xffff);
+    fn ids() {
+        let ids = |s| parse_ids(s).unwrap();
+        assert_eq!(
+            ids("1d6b:0002"),
+            Ids {
+                vendor: Some(0x1d6b),
+                product: Some(2)
+            }
+        );
+        assert_eq!(
+            ids("0x05ac:"),
+            Ids {
+                vendor: Some(0x05ac),
+                product: None
+            }
+        );
+        assert_eq!(
+            ids("05ac"),
+            Ids {
+                vendor: Some(0x05ac),
+                product: None
+            }
+        );
+        assert_eq!(
+            ids(":12a8"),
+            Ids {
+                vendor: None,
+                product: Some(0x12a8)
+            }
+        );
+        assert!(parse_ids("xyz").is_err());
     }
 }

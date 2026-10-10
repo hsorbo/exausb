@@ -5,6 +5,7 @@
 //! (Copyright (C) 2017-2018 Michael Drake <michael.drake@codethink.co.uk>).
 
 use crate::desc_defs::{Desc, DescType, DESC_UNDEFINED};
+use crate::model::{hex_bytes, Node};
 use crate::names::names_audioterminal;
 use crate::usb::Handle;
 use crate::usbmisc::get_dev_string;
@@ -18,13 +19,12 @@ fn byte(buf: &[u8], i: usize) -> u8 {
     buf.get(i).copied().unwrap_or(0)
 }
 
-/// Print a description of a bmControls field value.
+/// Decode a bmControls value into "X Control" lines.
 ///
 /// `BmControl1` has one bit per string; `BmControl2` has 2 bits per string,
 /// with the additional bit specifying whether the control is read-only.
-fn desc_bmcontrol_dump(bmcontrols: u64, strings: &[&str], two_bits: bool, indent: u32) {
+fn desc_bmcontrol_dump(bmcontrols: u64, strings: &[&str], two_bits: bool, field: &mut Node) {
     const SETTING: [&str; 3] = ["read-only", "ILLEGAL VALUE (0b10)", "read/write"];
-    let pad = (indent * 2) as usize;
 
     for (count, s) in strings.iter().enumerate() {
         if s.is_empty() {
@@ -32,17 +32,12 @@ fn desc_bmcontrol_dump(bmcontrols: u64, strings: &[&str], two_bits: bool, indent
         }
         if !two_bits {
             if (bmcontrols.checked_shr(count as u32).unwrap_or(0)) & 0x1 != 0 {
-                println!("{:pad$}{} Control", "", s);
+                field.text(format!("{s} Control"));
             }
         } else {
             let control = bmcontrols.checked_shr((count * 2) as u32).unwrap_or(0) & 0x3;
             if control != 0 {
-                println!(
-                    "{:pad$}{} Control ({})",
-                    "",
-                    s,
-                    SETTING[control as usize - 1]
-                );
+                field.text(format!("{s} Control ({})", SETTING[control as usize - 1]));
             }
         }
     }
@@ -146,144 +141,99 @@ fn get_array_entry_count(buf: &[u8], buf_len: u32, desc: &[Desc], array_entry: &
     }
 }
 
-/// Number of characters needed to render the largest array index, "[N]".
-fn get_char_count_for_array_index(array_entries: u32) -> u32 {
-    if array_entries > 100 {
-        5
-    } else if array_entries > 10 {
-        4
-    } else {
-        3
-    }
-}
-
-/// Render a field's name.
-fn field_render(entry: u32, entries: u32, field_len: u32, current: &Desc, indent: u32) {
-    let pad = (indent * 2) as usize;
-    if current.array.array {
-        let needed_chars = field_len
-            .saturating_sub(get_char_count_for_array_index(entries))
-            .saturating_sub(current.field.len() as u32) as usize;
-        print!(
-            "{:pad$}{}({}){:needed_chars$}",
-            "", current.field, entry, ""
-        );
-    } else {
-        print!("{:pad$}{:<w$}", "", current.field, w = field_len as usize);
-    }
-}
-
-/// Print a value as hex, right-aligned within `width` characters.
-fn hex_renderer(buf: &[u8], width: u32, offset: usize, bytes: u32) {
-    let align = width.saturating_sub(bytes * 2) as usize;
-    let digits = (bytes * 2) as usize;
-    print!(
-        " {:align$}0x{:0digits$x}",
-        "",
-        get_n_bytes_as_ull(buf, offset, bytes)
-    );
-}
-
-/// Print a number: single bytes in decimal, anything else as hex.
-fn number_renderer(buf: &[u8], width: u32, offset: usize, bytes: u32) {
+/// A number: single bytes in decimal, anything else as zero-padded hex.
+fn number(buf: &[u8], offset: usize, bytes: u32) -> String {
+    let value = get_n_bytes_as_ull(buf, offset, bytes);
     if bytes == 1 {
-        print!("   {:>w$}", byte(buf, offset), w = width as usize);
+        value.to_string()
     } else {
-        hex_renderer(buf, width, offset, bytes);
+        hex(value, bytes)
     }
 }
 
-/// Render a field's value according to its type.
+fn hex(value: u64, bytes: u32) -> String {
+    format!("0x{:0w$x}", value, w = (bytes * 2) as usize)
+}
+
+/// Add a field to `node` with its value rendered according to its type.
 #[allow(clippy::too_many_arguments)]
 fn value_renderer(
     dev: Option<&Handle>,
     current: &Desc,
-    current_size: u32,
+    name: String,
+    size: u32,
     buf: &[u8],
     buf_len: u32,
     desc: &[Desc],
-    indent: u32,
     offset: usize,
+    node: &mut Node,
 ) {
-    // Maximum amount of characters to right align numerical values by.
-    const SIZE_CHARS: u32 = 4;
+    let value = get_n_bytes_as_ull(buf, offset, size);
 
     match current.ty {
         DescType::Number | DescType::Constant => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!();
+            node.field(name, number(buf, offset, size));
         }
         DescType::NumberPostfix(postfix) => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!("{postfix}");
+            node.field(name, number(buf, offset, size))
+                .note(postfix.trim());
         }
         DescType::NumberStrings(strings) => {
-            let value = get_n_bytes_as_ull(buf, offset, current_size);
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            if let Some(s) = usize::try_from(value).ok().and_then(|v| strings.get(v)) {
-                print!(" {s}");
-            }
-            println!();
+            let s = usize::try_from(value)
+                .ok()
+                .and_then(|v| strings.get(v))
+                .copied();
+            node.field(name, number(buf, offset, size))
+                .note(s.unwrap_or(""));
         }
         DescType::Bcd => {
-            let size = current_size as usize;
+            let size = size as usize;
             let at = |i: usize| {
                 (offset + size)
                     .checked_sub(1 + i)
                     .map_or(0, |idx| byte(buf, idx))
             };
-            print!("  {:2x}", at(0));
+            let mut s = format!("{:x}", at(0));
             for i in 1..size {
-                print!(".{:02x}", at(i));
+                s += &format!(".{:02x}", at(i));
             }
-            println!();
+            node.field(name, s);
         }
         DescType::Bitmap => {
-            hex_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!();
+            node.field(name, hex(value, size));
         }
         DescType::BmControl1(strings) | DescType::BmControl2(strings) => {
-            hex_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!();
-            desc_bmcontrol_dump(
-                get_n_bytes_as_ull(buf, offset, current_size),
-                strings,
-                matches!(current.ty, DescType::BmControl2(_)),
-                indent + 1,
-            );
+            let field = node.field(name, hex(value, size));
+            let two_bits = matches!(current.ty, DescType::BmControl2(_));
+            desc_bmcontrol_dump(value, strings, two_bits, field);
         }
         DescType::BitmapStrings(strings) => {
-            let value = get_n_bytes_as_ull(buf, offset, current_size);
-            hex_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!();
-            let pad = ((indent + 1) * 2) as usize;
+            let field = node.field(name, hex(value, size));
             for (i, s) in strings.iter().enumerate() {
-                let Some(s) = s else { continue };
-                if value.checked_shr(i as u32).unwrap_or(0) & 0x1 == 0 {
-                    continue;
+                if let Some(s) = s {
+                    if value.checked_shr(i as u32).unwrap_or(0) & 0x1 != 0 {
+                        field.text(*s);
+                    }
                 }
-                println!("{:pad$}{}", "", s);
             }
         }
         DescType::StrDescIndex => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            println!(" {}", get_dev_string(dev, byte(buf, offset)));
+            let s = get_dev_string(dev, byte(buf, offset));
+            node.field(name, number(buf, offset, size)).note(s);
         }
         DescType::CsStrDescId => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
             // TODO: Add support for UAC3 class-specific String descriptor
-            println!();
+            node.field(name, number(buf, offset, size));
         }
         DescType::TerminalStr => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            let term_name =
-                names_audioterminal(get_n_bytes_as_ull(buf, offset, current_size) as u16);
-            println!(" {}", term_name.unwrap_or("(unknown)"));
+            let term_name = names_audioterminal(value as u16);
+            node.field(name, number(buf, offset, size))
+                .note(term_name.unwrap_or(""));
         }
         DescType::Extension { type_field, d } => {
             let ty = get_value_from_field(buf, buf_len, desc, type_field) as u32;
             // If the type didn't match a known type, use the undefined
-            // descriptor.
+            // descriptor (whose bytes then show up as junk).
             let ext_desc = d
                 .iter()
                 .find(|ext| ext.ty == ty)
@@ -293,30 +243,22 @@ fn value_renderer(
                 ext_desc,
                 buf.get(offset..).unwrap_or(&[]),
                 buf_len.saturating_sub(offset as u32),
-                indent,
+                node,
             );
         }
         DescType::Snowflake(f) => {
-            number_renderer(buf, SIZE_CHARS, offset, current_size);
-            f(get_n_bytes_as_ull(buf, offset, current_size), indent + 1);
+            f(value, node.field(name, number(buf, offset, size)));
         }
     }
 }
 
-fn dump_hex_bytes(buf: &[u8], from: usize, to: usize) {
-    for i in from..to {
-        print!("{:02x} ", byte(buf, i));
-    }
-    println!();
-}
-
-/// Dump descriptor `buf` according to the descriptor definition `desc`.
+/// Decode descriptor `buf` according to the definition `desc`, adding a
+/// field to `node` for each value.
 ///
 /// `buf_len` is the byte length of the descriptor data, or
 /// [`DESC_BUF_LEN_FROM_BUF`] to read it from the first field.
-pub fn desc_dump(dev: Option<&Handle>, desc: &[Desc], buf: &[u8], buf_len: u32, indent: u32) {
+pub fn desc_dump(dev: Option<&Handle>, desc: &[Desc], buf: &[u8], buf_len: u32, node: &mut Node) {
     let mut buf_len = buf_len;
-    let mut field_len: u32 = 18;
     let mut offset: usize = 0;
 
     // Find the buffer length, if we've been instructed to read it from the
@@ -327,20 +269,6 @@ pub fn desc_dump(dev: Option<&Handle>, desc: &[Desc], buf: &[u8], buf_len: u32, 
         }
     }
 
-    // Increase `field_len` to be sufficient for character length of longest
-    // field name for this descriptor.
-    for current in desc {
-        let mut needed_chars = 0;
-        if current.array.array {
-            let entries = get_array_entry_count(buf, buf_len, desc, current);
-            needed_chars = get_char_count_for_array_index(entries);
-        }
-        field_len = field_len.max(current.field.len() as u32 + needed_chars);
-    }
-
-    let warn_pad = (indent.saturating_sub(1) * 2) as usize;
-
-    // Step through each field, and dump it.
     for current in desc {
         let entries = if current.array.array {
             // Array type fields may have more than one entry.
@@ -349,56 +277,40 @@ pub fn desc_dump(dev: Option<&Handle>, desc: &[Desc], buf: &[u8], buf_len: u32, 
             1
         };
 
-        let current_size = get_entry_size(buf, buf_len, desc, current);
+        let size = get_entry_size(buf, buf_len, desc, current);
 
         for entry in 0..entries {
             // Check there's enough data in buf for this entry.
-            if offset + current_size as usize > buf_len as usize {
-                println!(
-                    "{:warn_pad$}Warning: Length insufficient for descriptor type.",
-                    ""
-                );
-                dump_hex_bytes(buf, offset, buf_len as usize);
+            if offset + size as usize > buf_len as usize {
+                let rest = buf.get(offset..buf_len as usize).unwrap_or(&[]);
+                let mut msg = format!("Descriptor too short for {}", current.field);
+                if !rest.is_empty() {
+                    msg += &format!(": {}", hex_bytes(rest));
+                }
+                node.warn(msg);
                 return;
             }
 
-            // Dump the field name.
-            let is_extension = matches!(current.ty, DescType::Extension { .. });
-            if !is_extension {
-                field_render(entry, entries, field_len, current, indent);
-            }
+            let name = if current.array.array {
+                format!("{}[{entry}]", current.field)
+            } else {
+                current.field.to_string()
+            };
+            value_renderer(dev, current, name, size, buf, buf_len, desc, offset, node);
 
-            // Dump the value.
-            value_renderer(
-                dev,
-                current,
-                current_size,
-                buf,
-                buf_len,
-                desc,
-                indent,
-                offset,
-            );
-
-            if is_extension {
+            if matches!(current.ty, DescType::Extension { .. }) {
                 // A desc extension consumes all remaining value buffer.
                 offset = buf_len as usize;
             } else {
-                // Advance offset in buffer.
-                offset += current_size as usize;
+                offset += size as usize;
             }
         }
     }
 
     // Check for junk at end of descriptor.
     if offset < buf_len as usize {
-        println!(
-            "{:warn_pad$}Warning: Junk at end of descriptor ({} bytes):",
-            "",
-            buf_len as usize - offset
-        );
-        print!("{:w$}", "", w = (indent * 2) as usize);
-        dump_hex_bytes(buf, offset, buf_len as usize);
+        let junk = buf.get(offset..buf_len as usize).unwrap_or(&[]);
+        node.warn(format!("Junk at end of descriptor: {}", hex_bytes(junk)));
     }
 }
 

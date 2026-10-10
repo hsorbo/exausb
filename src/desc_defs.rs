@@ -7,11 +7,11 @@
 //! Descriptors are described as slices of [`Desc`] field definitions, which
 //! are interpreted by [`crate::desc_dump::desc_dump`].
 
-/// Callback for [`DescType::Snowflake`] fields.
-///
-/// The numeric value has already been printed (without a trailing newline);
-/// the callback must always finish by printing a `'\n'`.
-pub type SnowflakeFn = fn(value: u64, indent: u32);
+use crate::model::Node;
+
+/// Callback for [`DescType::Snowflake`] fields: annotates the field node
+/// (its value is already set) with a note and/or child lines.
+pub type SnowflakeFn = fn(value: u64, field: &mut Node);
 
 /// Descriptor field value type.
 #[derive(Clone, Copy)]
@@ -964,25 +964,28 @@ static UAC3_CLK_SRC_BMATTR: [&str; 4] = [
 ];
 
 /// Special rendering function for UAC2 clock source bmAttributes
-fn desc_snowflake_dump_uac2_clk_src_bmattr(value: u64, _indent: u32) {
-    println!(
-        " {} clock {}",
-        UAC2_CLK_SRC_BMATTR[(value & 0x3) as usize],
-        if (value & 0x4) != 0 {
-            UAC3_CLK_SRC_BMATTR[3]
-        } else {
-            ""
-        }
+fn desc_snowflake_dump_uac2_clk_src_bmattr(value: u64, field: &mut Node) {
+    let sync = if (value & 0x4) != 0 {
+        UAC3_CLK_SRC_BMATTR[3]
+    } else {
+        ""
+    };
+    field.note(
+        format!(
+            "{} clock {sync}",
+            UAC2_CLK_SRC_BMATTR[(value & 0x3) as usize]
+        )
+        .trim_end(),
     );
 }
 
 /// Special rendering function for UAC3 clock source bmAttributes
-fn desc_snowflake_dump_uac3_clk_src_bmattr(value: u64, _indent: u32) {
-    println!(
-        " {} clock {}",
+fn desc_snowflake_dump_uac3_clk_src_bmattr(value: u64, field: &mut Node) {
+    field.note(format!(
+        "{} clock {}",
         UAC3_CLK_SRC_BMATTR[(value & 0x1) as usize],
         UAC3_CLK_SRC_BMATTR[(0x2 | ((value & 0x2) >> 1)) as usize]
-    );
+    ));
 }
 
 /// UAC2: 4.7.2.1 Clock Source Descriptor; Table 4-6.
@@ -1166,7 +1169,7 @@ static AUDIO_DATA_FORMAT_TYPE_III: &[&str] = &[
 ];
 
 /// Special rendering function for UAC1 AS interface wFormatTag
-fn desc_snowflake_dump_uac1_as_interface_wformattag(value: u64, _indent: u32) {
+fn desc_snowflake_dump_uac1_as_interface_wformattag(value: u64, field: &mut Node) {
     let mut format_string = "undefined";
 
     // Format codes are 0xTNNN, where T=Type prefix, NNN = format code.
@@ -1183,20 +1186,14 @@ fn desc_snowflake_dump_uac1_as_interface_wformattag(value: u64, _indent: u32) {
         format_string = AUDIO_DATA_FORMAT_TYPE_III[(value & 0xfff) as usize];
     }
 
-    println!(" {}", format_string);
+    field.note(format_string);
 }
 
 /// Special rendering function for UAC2 AS interface bmFormats
-fn desc_snowflake_dump_uac2_as_interface_bmformats(value: u64, indent: u32) {
-    println!();
+fn desc_snowflake_dump_uac2_as_interface_bmformats(value: u64, field: &mut Node) {
     for i in 0..5u32 {
         if (value >> i) & 0x1 != 0 {
-            println!(
-                "{:w$}{}",
-                "",
-                AUDIO_DATA_FORMAT_TYPE_I[(i + 1) as usize],
-                w = (indent * 2) as usize
-            );
+            field.text(AUDIO_DATA_FORMAT_TYPE_I[(i + 1) as usize]);
         }
     }
 }
@@ -1376,12 +1373,8 @@ static MIDI_ELEMENT_CAPS: &[Option<&str>] = &[
 /// baSourcePin(n) on the wire.  Represent the pair as a 2-byte array entry
 /// and unpack it here so the engine's per-field bounds checking still
 /// applies and we don't need a hand-rolled offset walk.
-fn desc_snowflake_midi_source_pair(value: u64, _indent: u32) {
-    println!(
-        " (ID {}, Pin {})",
-        (value & 0xff) as u32,
-        (value >> 8) as u32
-    );
+fn desc_snowflake_midi_source_pair(value: u64, field: &mut Node) {
+    field.note(format!("ID {}, Pin {}", value & 0xff, value >> 8));
 }
 
 /// midi10: 6.1.2.1 Class-Specific MS Interface Header Descriptor; Table 6-2.

@@ -6,5 +6,7 @@ description = "List USB devices on any platform: a libusb-based sibling of usbut
 license = "GPL-2.0-or-later"
 
 [dependencies]
-libc = "0.2"
+anstream = "1"
+anstyle = "1"
+clap = { version = "4", features = ["derive"] }
 rusb = "0.9.3"

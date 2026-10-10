@@ -1,32 +1,69 @@
 # exausb
 
-List USB devices and dump their descriptors, on any platform libusb
-supports (Linux, macOS, ...).
+List USB devices and decode their descriptors, on any platform libusb
+supports (Linux, macOS, ...).  A modern, cross-platform sibling of `lsusb`
+from [usbutils](https://github.com/gregkh/usbutils), written in Rust on top
+of libusb (through [rusb](https://crates.io/crates/rusb)).
 
-exausb is a cross-platform sibling of `lsusb` from
-[usbutils](https://github.com/gregkh/usbutils).  It takes the same options
-and prints descriptors in the same format, so if you know `lsusb` you know
-exausb.  It's written in Rust on top of libusb (through
-[rusb](https://crates.io/crates/rusb)), and doesn't depend on anything
-Linux-specific like udev or sysfs (though it uses sysfs where available).
+```
+$ exausb
+BUS  DEV  ID         SPEED  VENDOR       PRODUCT
+002  001  05ac:12a8  480M   Apple, Inc.  iPhone 5/5C/5S/6/SE/7/8/X/XR
+
+$ exausb -t
+Bus 002
+└─ Port 1  Apple, Inc. iPhone 5/5C/5S/6/SE/7/8/X/XR  05ac:12a8  480M · Device 001
+   ├─ If 0  Imaging · Still Image Capture · Picture Transfer Protocol (PIMA 15470)
+   ├─ If 1  Vendor Specific Class
+   └─ If 3  Communications
+
+$ exausb -v -s 2:1
+Bus 002 Device 001  Apple, Inc. iPhone 5/5C/5S/6/SE/7/8/X/XR  05ac:12a8  High Speed (480Mbps)
+├─ Device Descriptor
+│  bcdUSB              2.10
+│  bDeviceClass        0       (Defined at Interface level)
+│  idVendor            0x05ac  Apple, Inc.
+│  ...
+├─ Configuration 1  PTP · 500mA · Self Powered
+│  ...
+│  └─ Interface 0  Imaging · Still Image Capture · Picture Transfer Protocol (PIMA 15470) · PTP
+│     ├─ Endpoint 2 OUT  Bulk · 512 bytes
+│     ...
+```
+
+Output is colored on a terminal and plain when piped; use
+`--color auto|always|never` or set `NO_COLOR` to choose.
+
+## Usage
 
 ```
 cargo build --release
-./target/release/exausb            # list devices
-./target/release/exausb -v         # dump all descriptors
-./target/release/exausb -t         # show the device tree
+./target/release/exausb [OPTIONS]
 ```
 
-Options: `-v` (repeat for more), `-s [[bus]:][devnum]`,
-`-d vendor:[product]`, `-D device`, `-t`, `-V` and `-h`, as in `lsusb`.
+| Option | |
+|---|---|
+| `-v`, `--verbose` | Decode all descriptors of each device |
+| `-t`, `--tree` | Show the physical USB device hierarchy |
+| `-s [[BUS]:][DEVNUM]` | Only devices with this bus and/or device number |
+| `-d VENDOR[:PRODUCT]` | Only devices with this vendor and/or product ID (hex) |
+| `--color WHEN` | `auto` (default), `always` or `never` |
+
+Like `lsusb`, exausb exits with status 1 when no device matches.
+
+`-v` decodes standard descriptors (device, configuration, interface,
+endpoint, BOS and device capabilities, hub, OTG, debug, device qualifier and
+status) and class-specific ones: audio (UAC1/2/3) and MIDI, video (UVC), HID
+(including report descriptors, where the OS lets us read them), CDC, CCID,
+printers (IPP over USB), DFU and wireless.  Some information needs to open
+the device; if that's not allowed, exausb shows what it can and says so.
 
 ## Vendor and product names
 
 A copy of `usb.ids` from the
 [Linux USB ID Repository](http://www.linux-usb.org/usb-ids.html) is embedded
 in the binary (`data/usb.ids`), so names work everywhere without setup.
-
-To refresh the bundled copy, run the script and rebuild:
+To refresh it, run the script and rebuild:
 
 ```
 scripts/update-usb-ids.sh
@@ -34,46 +71,19 @@ cargo build --release
 ```
 
 To use a different file without rebuilding, set `USB_IDS=/path/to/usb.ids`.
-
 `usb.ids` is maintained by Stephen J. Gowdy and contributors; see the header
 of `data/usb.ids`.
 
-## Compared to lsusb
+Without a name in the database, exausb shows the device's own manufacturer
+and product strings (on Linux read from sysfs, elsewhere from the device).
 
-- **Verbose output (`-v`)** is the same as `lsusb -v`, apart from the
-  details below.
-- **Names** come from the bundled `usb.ids` rather than the udev hwdb.
-- **Device strings:** without sysfs (non-Linux), manufacturer, product and
-  serial strings are read from the device itself.
-- **The tree (`-t`)** shows only what is known on every platform: no kernel
-  driver names, port counts only for hubs whose descriptor could be read,
-  and sysfs paths (`-vv`) only where sysfs exists.  On Linux it's read from
-  sysfs, elsewhere from libusb's topology; on macOS, libusb doesn't report
-  root hubs, so a bus line shows just the bus number:
-  ```
-  /:  Bus 002
-      |__ Port 001: Dev 001, If 0, Class=Imaging, 480M
-  ```
-- **Malformed descriptors:** lsusb occasionally reads a byte past the end of
-  a descriptor (for example `bmVideoStandards` in a UVC 1.0 processing unit,
-  or `bmaControls` in a UVC header with `bControlSize` 0) and prints whatever
-  byte follows in memory; exausb prints 0.
-- **Error messages** that lsusb builds from `errno` (e.g. "can't get device
-  qualifier") show the libusb error instead.
+## Design
 
-## Testing
-
-`cargo test` runs the unit tests.
-
-`tests/difftest/run.sh [seed] [count]` checks that descriptor dumping matches
-lsusb.  It downloads usbutils' sources (at commit `24e48ca7`, which exausb
-derives from) and builds their descriptor dumping into a small harness
-(`tests/difftest/harness.c`), with udev and sysfs stubbed out.  It then feeds
-randomly generated configuration, interface, endpoint, hub, HID report and
-BOS descriptors to both, and compares stdout and stderr byte for byte.  It
-needs a C compiler, curl, python3 and libusb-1.0 (found with pkg-config).
+Everything is built as a tree of sections, fields (`name  value  note`) and
+warnings (`src/model.rs`) and then drawn by one renderer (`src/render.rs`).
+Descriptor decoding lives in `src/dump/` and `src/desc_dump.rs`.
 
 ## License
 
-GPL-2.0-or-later.  exausb is derived from usbutils, and keeps its license and
-copyright notices.  See `LICENSE`.
+GPL-2.0-or-later.  The descriptor decoding is derived from usbutils and
+keeps its copyright notices.  See `LICENSE`.

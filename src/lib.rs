@@ -10,12 +10,11 @@ pub mod cli;
 mod desc_defs;
 mod desc_dump;
 mod dump;
+pub mod model;
 mod names;
+pub mod render;
 mod sysfs;
 mod tree;
 mod usb;
 mod usb_spec;
 mod usbmisc;
-
-#[doc(hidden)]
-pub use dump::harness;
