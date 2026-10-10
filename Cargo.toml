@@ -9,4 +9,5 @@ license = "GPL-2.0-or-later"
 anstream = "1"
 anstyle = "1"
 clap = { version = "4", features = ["derive"] }
+ratatui = "0.30"
 rusb = "0.9.3"

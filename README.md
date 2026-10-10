@@ -45,6 +45,7 @@ cargo build --release
 |---|---|
 | `-v`, `--verbose` | Decode all descriptors of each device |
 | `-t`, `--tree` | Show the physical USB device hierarchy |
+| `-i`, `--interactive` | Browse devices interactively (see below) |
 | `-s [[BUS]:][DEVNUM]` | Only devices with this bus and/or device number |
 | `-d VENDOR[:PRODUCT]` | Only devices with this vendor and/or product ID (hex) |
 | `--color WHEN` | `auto` (default), `always` or `never` |
@@ -57,6 +58,22 @@ status) and class-specific ones: audio (UAC1/2/3) and MIDI, video (UVC), HID
 (including report descriptors, where the OS lets us read them), CDC, CCID,
 printers (IPP over USB), DFU and wireless.  Some information needs to open
 the device; if that's not allowed, exausb shows what it can and says so.
+
+## Interactive mode
+
+`exausb -i` shows the device tree on the left and the selected device's
+descriptors on the right, as a foldable tree that starts out showing just
+the section summaries.  The device list refreshes every second, so plugging
+and unplugging devices shows up live.
+
+| Key | |
+|---|---|
+| `↑` `↓` / `j` `k`, `PgUp` `PgDn`, `g` `G` | Move |
+| `Tab`, `→` / `←` | Switch between the device list and the details |
+| `Enter` / `Space`, `→` / `←` | Expand / fold the section under the cursor |
+| `e` / `c` | Expand / collapse all sections |
+| `r` | Re-read the devices |
+| `q` / `Esc` | Quit |
 
 ## Vendor and product names
 
@@ -80,7 +97,9 @@ and product strings (on Linux read from sysfs, elsewhere from the device).
 ## Design
 
 Everything is built as a tree of sections, fields (`name  value  note`) and
-warnings (`src/model.rs`) and then drawn by one renderer (`src/render.rs`).
+warnings (`src/model.rs`) and then drawn by one renderer (`src/render.rs`),
+which both the command line output and the interactive mode (`src/tui.rs`)
+use.
 Descriptor decoding lives in `src/dump/` and `src/desc_dump.rs`.
 
 ## License

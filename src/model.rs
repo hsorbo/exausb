@@ -37,6 +37,9 @@ pub struct Node {
     pub value: String,
     pub note: String,
     pub children: Vec<Node>,
+    /// Optional identifier of what this node shows (e.g. a device), so
+    /// interactive views can map a line back to it.
+    pub key: Option<u32>,
 }
 
 impl Node {
@@ -92,6 +95,12 @@ impl Node {
         if !note.is_empty() {
             self.note = note;
         }
+        self
+    }
+
+    /// Set this node's key and return it.
+    pub fn key(&mut self, key: u32) -> &mut Node {
+        self.key = Some(key);
         self
     }
 

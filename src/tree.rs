@@ -89,8 +89,14 @@ fn assemble(mut busses: BTreeMap<u8, Node>, devices: Devices) -> Vec<Node> {
     busses.into_values().collect()
 }
 
-/// Build the device tree, one node per bus.
-pub fn tree(ctx: &Context) -> rusb::Result<Vec<Node>> {
+/// The key identifying a device in the tree: bus and device number.
+pub fn device_key(dev: &Device) -> u32 {
+    (dev.bus_number() as u32) << 8 | dev.address() as u32
+}
+
+/// Build the device tree, one node per bus.  Device nodes carry their
+/// [`device_key`]; `with_interfaces` adds each device's interfaces.
+pub fn tree(ctx: &Context, with_interfaces: bool) -> rusb::Result<Vec<Node>> {
     let mut busses = BTreeMap::new();
     let mut devices = Devices::new();
 
@@ -104,7 +110,9 @@ pub fn tree(ctx: &Context) -> rusb::Result<Vec<Node>> {
         if ports.is_empty() {
             // A root hub.
             let mut node = Node::new(format!("Bus {bus:03}"));
-            node.value(id).note(join(&["root hub", speed]));
+            node.value(id)
+                .note(join(&["root hub", speed]))
+                .key(device_key(&dev));
             busses.insert(bus, node);
             continue;
         }
@@ -115,8 +123,11 @@ pub fn tree(ctx: &Context) -> rusb::Result<Vec<Node>> {
             ports.last().unwrap()
         ));
         node.value(id)
-            .note(join(&[speed, &format!("Device {:03}", dev.address())]));
-        interfaces(&dev, &mut node);
+            .note(join(&[speed, &format!("Device {:03}", dev.address())]))
+            .key(device_key(&dev));
+        if with_interfaces {
+            interfaces(&dev, &mut node);
+        }
         devices.insert((bus, ports), node);
     }
 

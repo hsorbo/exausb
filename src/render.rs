@@ -39,89 +39,160 @@ fn pad(s: &str, w: usize) -> String {
     " ".repeat(w.saturating_sub(width(s)))
 }
 
-/// `name  value  note` with the parts that are present.
-fn line(name: String, value: &str, value_w: usize, note: &str) -> String {
-    let mut out = name;
-    if !value.is_empty() {
-        out += "  ";
-        out += &styled(VALUE, value);
-    }
-    if !note.is_empty() {
-        out += &pad(value, value_w);
-        out += "  ";
-        out += &styled(NOTE, note);
-    }
-    out
+/// A piece of text in one style.
+pub type Span = (Style, String);
+
+/// One rendered line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Line {
+    pub spans: Vec<Span>,
+    /// The key of the node this line shows, if it has one.
+    pub key: Option<u32>,
+    /// For section lines: the section's path (child indices from the
+    /// root), used to fold it in interactive views.
+    pub section: Option<Vec<usize>>,
 }
 
-fn render_children(children: &[Node], prefix: &str, out: &mut String) {
-    let fields = children.iter().filter(|c| c.kind == Kind::Field);
-    let name_w = fields
-        .clone()
-        .map(|c| width(&c.name))
-        .filter(|&w| w <= MAX_NAME_WIDTH)
-        .max()
-        .unwrap_or(0);
-    let value_w = fields
-        .filter(|c| !c.note.is_empty())
-        .map(|c| width(&c.value))
-        .filter(|&w| w <= MAX_VALUE_WIDTH)
-        .max()
-        .unwrap_or(0);
+impl Line {
+    fn push(&mut self, style: Style, text: impl Into<String>) {
+        let text = text.into();
+        if !text.is_empty() {
+            self.spans.push((style, text));
+        }
+    }
 
-    for (i, c) in children.iter().enumerate() {
-        let last = i + 1 == children.len();
-        match c.kind {
-            Kind::Section => {
-                let branch = if last { "└─ " } else { "├─ " };
-                let title = styled(TITLE, &c.name);
-                out.push_str(&format!(
-                    "{prefix}{}{}\n",
-                    styled(GLYPH, branch),
-                    line(title, &c.value, 0, &c.note)
-                ));
-                let cont = if last { "   " } else { "│  " };
-                render_children(
-                    &c.children,
-                    &format!("{prefix}{}", styled(GLYPH, cont)),
-                    out,
-                );
+    /// The line with ANSI styles.
+    pub fn to_ansi(&self) -> String {
+        self.spans
+            .iter()
+            .map(|(style, text)| styled(*style, text))
+            .collect()
+    }
+
+    /// The line without styles.
+    pub fn text(&self) -> String {
+        self.spans.iter().map(|(_, text)| text.as_str()).collect()
+    }
+}
+
+/// Which sections are folded (interactive views); `None` means "draw
+/// everything, without fold markers".
+pub type Folds<'a> = Option<&'a dyn Fn(&[usize]) -> bool>;
+
+struct Renderer<'a> {
+    folds: Folds<'a>,
+    lines: Vec<Line>,
+}
+
+impl Renderer<'_> {
+    /// Append `  value  note` (as present) to `line`.
+    fn value_note(line: &mut Line, value: &str, value_w: usize, note: &str) {
+        if !value.is_empty() {
+            line.push(Style::new(), "  ");
+            line.push(VALUE, value);
+        }
+        if !note.is_empty() {
+            line.push(Style::new(), format!("{}  ", pad(value, value_w)));
+            line.push(NOTE, note);
+        }
+    }
+
+    fn children(&mut self, node: &Node, path: &mut Vec<usize>, prefix: &[Span]) {
+        let children = &node.children;
+        let fields = children.iter().filter(|c| c.kind == Kind::Field);
+        let name_w = fields
+            .clone()
+            .map(|c| width(&c.name))
+            .filter(|&w| w <= MAX_NAME_WIDTH)
+            .max()
+            .unwrap_or(0);
+        let value_w = fields
+            .filter(|c| !c.note.is_empty())
+            .map(|c| width(&c.value))
+            .filter(|&w| w <= MAX_VALUE_WIDTH)
+            .max()
+            .unwrap_or(0);
+
+        for (i, c) in children.iter().enumerate() {
+            path.push(i);
+            let last = i + 1 == children.len();
+            let mut line = Line {
+                spans: prefix.to_vec(),
+                key: c.key,
+                section: None,
+            };
+            let mut child_prefix = prefix.to_vec();
+            match c.kind {
+                Kind::Section => {
+                    line.push(GLYPH, if last { "└─ " } else { "├─ " });
+                    let folded = self.folds.map(|f| f(path));
+                    if let Some(folded) = folded {
+                        let marker = match (c.children.is_empty(), folded) {
+                            (true, _) => "  ",
+                            (false, true) => "▸ ",
+                            (false, false) => "▾ ",
+                        };
+                        line.push(GLYPH, marker);
+                    }
+                    line.push(TITLE, &c.name);
+                    Self::value_note(&mut line, &c.value, 0, &c.note);
+                    line.section = Some(path.clone());
+                    self.lines.push(line);
+                    if folded == Some(true) {
+                        path.pop();
+                        continue;
+                    }
+                    child_prefix.push((GLYPH, (if last { "   " } else { "│  " }).into()));
+                }
+                Kind::Field => {
+                    line.push(Style::new(), format!("{}{}", c.name, pad(&c.name, name_w)));
+                    let value = if c.value.is_empty() { "-" } else { &c.value };
+                    Self::value_note(&mut line, value, value_w, &c.note);
+                    self.lines.push(line);
+                    child_prefix.push((Style::new(), " ".repeat(name_w + 2)));
+                }
+                Kind::Text => {
+                    line.push(Style::new(), &c.name);
+                    self.lines.push(line);
+                    child_prefix.push((Style::new(), "  ".into()));
+                }
+                Kind::Warning => {
+                    line.push(WARNING, format!("! {}", c.name));
+                    self.lines.push(line);
+                }
             }
-            Kind::Field => {
-                let name = format!("{}{}", c.name, pad(&c.name, name_w));
-                let value = if c.value.is_empty() { "-" } else { &c.value };
-                out.push_str(&format!(
-                    "{prefix}{}\n",
-                    line(name, value, value_w, &c.note)
-                ));
-                render_children(
-                    &c.children,
-                    &format!("{prefix}{}", " ".repeat(name_w + 2)),
-                    out,
-                );
-            }
-            Kind::Text => {
-                out.push_str(&format!("{prefix}{}\n", c.name));
-                render_children(&c.children, &format!("{prefix}  "), out);
-            }
-            Kind::Warning => {
-                out.push_str(&format!(
-                    "{prefix}{}\n",
-                    styled(WARNING, &format!("! {}", c.name))
-                ));
-            }
+            self.children(c, path, &child_prefix);
+            path.pop();
         }
     }
 }
 
+/// Render a top-level node as lines: a bold header line, then its children
+/// as a tree.  With `folds`, sections get fold markers and folded sections
+/// hide their contents.
+pub fn lines(node: &Node, folds: Folds) -> Vec<Line> {
+    let mut header = Line {
+        key: node.key,
+        section: Some(Vec::new()),
+        ..Default::default()
+    };
+    header.push(HEADER, &node.name);
+    Renderer::value_note(&mut header, &node.value, 0, &node.note);
+
+    let mut r = Renderer {
+        folds,
+        lines: vec![header],
+    };
+    r.children(node, &mut Vec::new(), &[]);
+    r.lines
+}
+
 /// Render a top-level node: a bold header line, then its children as a tree.
 pub fn render(node: &Node) -> String {
-    let mut out = format!(
-        "{}\n",
-        line(styled(HEADER, &node.name), &node.value, 0, &node.note)
-    );
-    render_children(&node.children, "", &mut out);
-    out
+    lines(node, None)
+        .iter()
+        .map(|line| line.to_ansi() + "\n")
+        .collect()
 }
 
 /// Render rows as aligned columns under a dimmed header.  `styles` gives

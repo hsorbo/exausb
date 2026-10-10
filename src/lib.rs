@@ -15,6 +15,7 @@ mod names;
 pub mod render;
 mod sysfs;
 mod tree;
+mod tui;
 mod usb;
 mod usb_spec;
 mod usbmisc;

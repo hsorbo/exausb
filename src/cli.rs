@@ -24,6 +24,10 @@ struct Args {
     #[arg(short, long)]
     tree: bool,
 
+    /// Browse devices interactively
+    #[arg(short, long, conflicts_with_all = ["verbose", "tree"])]
+    interactive: bool,
+
     /// Only show devices with this bus and/or device number (decimal)
     #[arg(short = 's', value_name = "[[BUS]:][DEVNUM]", value_parser = parse_select)]
     select: Option<Select>,
@@ -158,8 +162,18 @@ pub fn run() -> ExitCode {
         }
     };
 
+    if args.interactive {
+        return match crate::tui::run(ctx) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("exausb: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     if args.tree {
-        return match tree::tree(&ctx) {
+        return match tree::tree(&ctx, true) {
             Ok(busses) => {
                 print(&busses.iter().map(render::render).collect::<String>());
                 ExitCode::SUCCESS
