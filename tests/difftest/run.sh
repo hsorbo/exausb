@@ -33,7 +33,9 @@ ${CC:-cc} -O1 -w -std=gnu11 -DPACKAGE_NAME='"usbutils"' -DVERSION='"test"' \
 
 python3 "$here/gen.py" "$SEED" "$COUNT" > "$work/input.txt"
 "$work/harness-c" < "$work/input.txt" > "$work/out-c.txt" 2> "$work/err-c.txt"
-USB_IDS=/nonexistent "$root/target/debug/examples/difftest" < "$work/input.txt" \
+# (The Rust driver never loads a name database, matching the stubbed-out
+# udev lookups on the C side.)
+"$root/target/debug/examples/difftest" < "$work/input.txt" \
 	> "$work/out-rust.txt" 2> "$work/err-rust.txt"
 
 if ! cmp -s "$work/err-c.txt" "$work/err-rust.txt"; then

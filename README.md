@@ -18,21 +18,26 @@ All of upstream's options are supported: `-v`, `-s [[bus]:][devnum]`,
 ## Vendor and product names
 
 Upstream gets vendor, product and class names from the udev hwdb, which only
-exists on Linux.  This port reads the `usb.ids` file directly.  It looks in
-the usual places (`/usr/share/hwdata/usb.ids`, `/usr/share/misc/usb.ids`, the
-Homebrew and MacPorts prefixes, ...), or in the file named by the `USB_IDS`
-environment variable.  On macOS, get one with e.g.
+exists on Linux.  This port embeds a copy of `usb.ids` from the
+[Linux USB ID Repository](http://www.linux-usb.org/usb-ids.html) in the
+binary (`data/usb.ids`), so names work everywhere without setup.
+
+To refresh the bundled copy, run the script and rebuild:
 
 ```
-curl -o ~/usb.ids https://raw.githubusercontent.com/usbids/usbids/master/usb.ids
-export USB_IDS=~/usb.ids
+scripts/update-usb-ids.sh
+cargo build --release
 ```
 
-Without it, names fall back to the device's own manufacturer and product
-strings, as in upstream.
+To use a different file without rebuilding, set `USB_IDS=/path/to/usb.ids`.
+
+`usb.ids` is maintained by Stephen J. Gowdy and contributors; see the header
+of `data/usb.ids`.
 
 ## Differences from upstream
 
+- **Name database:** names come from the bundled `usb.ids` (see above)
+  rather than the udev hwdb.
 - **Device strings without sysfs:** where there's no sysfs (non-Linux),
   manufacturer, product and serial strings are read from the device's string
   descriptors.

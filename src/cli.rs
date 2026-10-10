@@ -273,9 +273,9 @@ pub fn run() -> ExitCode {
     dump::set_verblevel(opts.verblevel);
 
     // By default, print names as well as numbers.
-    if names::names_init().is_err() {
+    if let Err(e) = names::names_init() {
         eprintln!(
-            "unable to initialize usb spec: no usb.ids found (set {} to its path)",
+            "unable to read {}, using the bundled usb.ids: {e}",
             names::USB_IDS_ENV
         );
     }

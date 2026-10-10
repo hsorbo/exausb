@@ -5,12 +5,14 @@
 //! Copyright (C) 2013 Tom Gundersen).
 //!
 //! Upstream looks vendor/product/class names up in the udev hwdb, which is
-//! generated from the `usb.ids` file.  udev is Linux-only, so this port reads
-//! `usb.ids` directly.  The remaining tables (HID, audio/video terminals, ...)
-//! are compiled in from `usb-spec.h`, exactly as upstream does.
+//! generated from the `usb.ids` file.  udev is Linux-only, so this port uses
+//! `usb.ids` directly: a copy is embedded in the binary (refresh it with
+//! `scripts/update-usb-ids.sh`), and `$USB_IDS` can point at another one.
+//! The remaining tables (HID, audio/video terminals, ...) are compiled in
+//! from `usb-spec.h`, exactly as upstream does.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::sysfs;
@@ -18,25 +20,14 @@ use crate::usb::{self, Device, Handle};
 use crate::usb_spec;
 use crate::usbmisc::get_dev_string;
 
-/// Environment variable that may point at a `usb.ids` file.
+/// Environment variable that may point at a `usb.ids` file to use instead
+/// of the embedded one.
 pub const USB_IDS_ENV: &str = "USB_IDS";
 
-/// Places where distributions (and Homebrew/MacPorts) install `usb.ids`.
-const USB_IDS_PATHS: &[&str] = &[
-    "/usr/share/hwdata/usb.ids",
-    "/usr/share/misc/usb.ids",
-    "/usr/share/usb.ids",
-    "/usr/share/libosinfo/usb.ids",
-    "/usr/local/share/hwdata/usb.ids",
-    "/usr/local/share/misc/usb.ids",
-    "/usr/local/share/usb.ids",
-    "/opt/homebrew/share/hwdata/usb.ids",
-    "/opt/homebrew/share/misc/usb.ids",
-    "/opt/homebrew/share/usb.ids",
-    "/opt/local/share/hwdata/usb.ids",
-    "/opt/local/share/usb.ids",
-    "/var/lib/usbutils/usb.ids",
-];
+/// The bundled `usb.ids` (from the Linux USB ID Repository).  It's mostly
+/// UTF-8 but has a few stray Latin-1 bytes, so it's embedded as bytes and
+/// decoded leniently.
+static BUNDLED_USB_IDS: &[u8] = include_bytes!("../data/usb.ids");
 
 /// Parsed contents of a `usb.ids` file (the parts lsusb uses).
 #[derive(Default, Debug)]
@@ -139,30 +130,30 @@ impl UsbIds {
     }
 }
 
-static DB: OnceLock<Option<UsbIds>> = OnceLock::new();
+static DB: OnceLock<UsbIds> = OnceLock::new();
 
-fn candidate_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(p) = std::env::var_os(USB_IDS_ENV) {
-        paths.push(PathBuf::from(p));
-    }
-    paths.extend(USB_IDS_PATHS.iter().map(PathBuf::from));
-    paths
+fn bundled() -> UsbIds {
+    UsbIds::parse(&String::from_utf8_lossy(BUNDLED_USB_IDS))
 }
 
-/// Load the name database.  Returns `Err` if no `usb.ids` could be read;
-/// lookups then simply return `None`.
-pub fn names_init() -> Result<(), ()> {
-    let db = DB.get_or_init(|| candidate_paths().iter().find_map(|p| UsbIds::load(p).ok()));
-    if db.is_some() {
-        Ok(())
-    } else {
-        Err(())
-    }
+/// Load the name database: the file named by `$USB_IDS` if set, otherwise
+/// the bundled copy.  If `$USB_IDS` can't be read, the bundled copy is used
+/// and an error message is returned.  Until this is called, name lookups
+/// return `None`.
+pub fn names_init() -> Result<(), String> {
+    let mut result = Ok(());
+    DB.get_or_init(|| match std::env::var_os(USB_IDS_ENV) {
+        Some(path) => UsbIds::load(Path::new(&path)).unwrap_or_else(|e| {
+            result = Err(format!("{}: {e}", Path::new(&path).display()));
+            bundled()
+        }),
+        None => bundled(),
+    });
+    result
 }
 
 fn db() -> Option<&'static UsbIds> {
-    DB.get().and_then(Option::as_ref)
+    DB.get()
 }
 
 fn generic(table: &'static [(u32, &'static str)], idx: u32) -> Option<&'static str> {
@@ -378,6 +369,15 @@ HID 21  HID
         // Non vendor/class sections must not leak into the tables.
         assert_eq!(ids.vendors.len(), 2);
         assert_eq!(ids.classes.len(), 2);
+    }
+
+    #[test]
+    fn bundled_usb_ids() {
+        let ids = bundled();
+        assert_eq!(ids.vendors.get(&0x1d6b).unwrap(), "Linux Foundation");
+        assert_eq!(ids.products.get(&(0x1d6b, 0x0002)).unwrap(), "2.0 root hub");
+        assert_eq!(ids.classes.get(&0x09).unwrap(), "Hub");
+        assert!(ids.vendors.len() > 1000);
     }
 
     #[test]
