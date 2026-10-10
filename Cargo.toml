@@ -2,12 +2,8 @@
 name = "exausb"
 version = "0.1.0"
 edition = "2021"
-description = "A Rust/libusb port of usbutils' lsusb"
+description = "List USB devices on any platform: a libusb-based sibling of usbutils' lsusb"
 license = "GPL-2.0-or-later"
-
-[[bin]]
-name = "lsusb"
-path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! Helpers for querying USB properties from sysfs (Linux only).
 //!
-//! Port of usbutils' `sysfs.c`.
+//! Derived from usbutils' `sysfs.c`.
 
 use std::path::Path;
 

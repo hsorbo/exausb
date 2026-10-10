@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! `lsusb -t`: dump the physical USB device hierarchy as a tree.
+//! `exausb -t`: show the physical USB device hierarchy as a tree.
 //!
-//! Port of usbutils' `lsusb-t.c` (Copyright 2011 Greg Kroah-Hartman).
+//! Derived from usbutils' `lsusb-t.c` (Copyright 2011 Greg Kroah-Hartman).
 //!
-//! Upstream builds the tree from Linux sysfs, which also tells it which
-//! kernel driver is bound to each interface.  This port does the same when
-//! sysfs is available, and otherwise builds the tree from libusb's topology
-//! information (bus number and port path).  Drivers aren't known then and
-//! are shown as `[unknown]`.
+//! On Linux the tree is read from sysfs, which also knows the link width
+//! (lanes) of SuperSpeed devices.  Elsewhere it's built from libusb's
+//! topology information (bus number and port path).  Only information that
+//! is actually known is shown: e.g. on macOS libusb doesn't report root
+//! hubs, so a bus line shows just the bus number.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -25,7 +25,6 @@ pub struct TreeInterface {
     pub configuration: u32,
     pub ifnum: u32,
     pub class: u8,
-    pub driver: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -61,7 +60,6 @@ pub struct TreeBus {
     pub speed: String,
     pub rx_lanes: u32,
     pub tx_lanes: u32,
-    pub driver: String,
     /// No root hub device was reported for this bus (libusb on some
     /// platforms); only the bus number is known.
     pub synthetic: bool,
@@ -90,22 +88,37 @@ fn lanes_to_str(tx: u32, rx: u32) -> String {
     }
 }
 
+/// "480M" (plus lane info), or "unknown speed".
+fn speed_to_str(speed: &str, tx_lanes: u32, rx_lanes: u32) -> String {
+    if speed.parse::<f64>().is_ok() {
+        format!("{speed}M{}", lanes_to_str(tx_lanes, rx_lanes))
+    } else {
+        "unknown speed".to_string()
+    }
+}
+
+/// ", N ports" for hubs whose port count is known.
+fn ports_to_str(maxchild: u32) -> String {
+    if maxchild > 0 {
+        format!(", {maxchild} ports")
+    } else {
+        String::new()
+    }
+}
+
 fn print_usbbusnode(b: &TreeBus) {
-    let lanes = lanes_to_str(b.tx_lanes, b.rx_lanes);
-    println!(
-        "/:  Bus {:03}.Port {:03}: Dev {:03}, Class={}, Driver={}/{}p, {}M{}",
-        b.busnum,
-        1,
-        b.devnum,
-        bdeviceclass_to_str(b.device_class),
-        b.driver,
-        b.maxchild,
-        b.speed,
-        lanes
-    );
     if b.synthetic {
+        println!("/:  Bus {:03}", b.busnum);
         return;
     }
+    println!(
+        "/:  Bus {:03}: Dev {:03}, Class={}{}, {}",
+        b.busnum,
+        b.devnum,
+        bdeviceclass_to_str(b.device_class),
+        ports_to_str(b.maxchild),
+        speed_to_str(&b.speed, b.tx_lanes, b.rx_lanes)
+    );
     if verblevel() >= 1 {
         let vendor = get_vendor_string(b.id_vendor);
         let product = get_product_string(b.id_vendor, b.id_product);
@@ -114,7 +127,7 @@ fn print_usbbusnode(b: &TreeBus) {
             b.id_vendor, b.id_product, vendor, product
         );
     }
-    if verblevel() >= 2 {
+    if verblevel() >= 2 && sysfs::available() {
         println!(
             "    {}/{}  /dev/bus/usb/{:03}/{:03}",
             SYS_BUS_USB_DEVICES, b.name, b.busnum, b.devnum
@@ -123,26 +136,25 @@ fn print_usbbusnode(b: &TreeBus) {
 }
 
 fn print_usbdevice(d: &TreeDevice, i: Option<&TreeInterface>, indent: usize) {
-    let lanes = lanes_to_str(d.tx_lanes, d.rx_lanes);
+    let speed = speed_to_str(&d.speed, d.tx_lanes, d.rx_lanes);
 
     match i {
-        None => println!(
-            "Port {:03}: Dev {:03}, {}M{}",
-            d.portnum, d.devnum, d.speed, lanes
-        ),
+        None => println!("Port {:03}: Dev {:03}, {}", d.portnum, d.devnum, speed),
         Some(i) => {
-            let subcls = get_class_string(i.class);
-            if i.class == 9 {
-                println!(
-                    "Port {:03}: Dev {:03}, If {}, Class={}, Driver={}/{}p, {}M{}",
-                    d.portnum, d.devnum, i.ifnum, subcls, i.driver, d.maxchild, d.speed, lanes
-                );
+            let ports = if i.class == usb::CLASS_HUB {
+                ports_to_str(d.maxchild)
             } else {
-                println!(
-                    "Port {:03}: Dev {:03}, If {}, Class={}, Driver={}, {}M{}",
-                    d.portnum, d.devnum, i.ifnum, subcls, i.driver, d.speed, lanes
-                );
-            }
+                String::new()
+            };
+            println!(
+                "Port {:03}: Dev {:03}, If {}, Class={}{}, {}",
+                d.portnum,
+                d.devnum,
+                i.ifnum,
+                get_class_string(i.class),
+                ports,
+                speed
+            );
         }
     }
     if verblevel() >= 1 {
@@ -154,7 +166,7 @@ fn print_usbdevice(d: &TreeDevice, i: Option<&TreeInterface>, indent: usize) {
             d.id_vendor, d.id_product, vendor, product
         );
     }
-    if verblevel() >= 2 {
+    if verblevel() >= 2 && sysfs::available() {
         print!(" {:>indent$}", "    ");
         println!(
             "{}/{}  /dev/bus/usb/{:03}/{:03}",
@@ -303,11 +315,6 @@ fn read_sysfs_int(root: &str, d_name: &str, file: &str, radix: u32) -> u32 {
     }
 }
 
-fn read_driver(link: &str) -> Option<String> {
-    let target = fs::read_link(link).ok()?;
-    target.file_name().map(|n| n.to_string_lossy().into_owned())
-}
-
 /// Parse a leading decimal number; returns it and the rest of the string.
 fn parse_num(s: &str) -> Option<(u32, &str)> {
     let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
@@ -339,7 +346,6 @@ fn tree_from_sysfs(root: &str) -> std::io::Result<Vec<TreeBus>> {
                 speed,
                 rx_lanes: read_sysfs_int(root, &d_name, "rx_lanes", 10),
                 tx_lanes: read_sysfs_int(root, &d_name, "tx_lanes", 10),
-                driver: read_driver(&format!("{root}/{d_name}/../driver")).unwrap_or_default(),
                 name: d_name,
                 synthetic: false,
                 children: Vec::new(),
@@ -353,15 +359,12 @@ fn tree_from_sysfs(root: &str) -> std::io::Result<Vec<TreeBus>> {
                 let Some((ifnum, _)) = rest.get(1..).and_then(parse_num) else {
                     continue;
                 };
-                let driver = read_driver(&format!("{root}/{d_name}/driver"))
-                    .unwrap_or_else(|| "[none]".to_string());
                 interfaces.push((
                     dev_name.to_string(),
                     TreeInterface {
                         configuration,
                         ifnum,
                         class: read_sysfs_int(root, &d_name, "bInterfaceClass", 16) as u8,
-                        driver,
                     },
                 ));
             } else {
@@ -480,7 +483,6 @@ fn tree_from_libusb(ctx: &Context) -> rusb::Result<Vec<TreeBus>> {
                     id_product: desc.id_product,
                     maxchild,
                     speed,
-                    driver: "[unknown]".to_string(),
                     ..Default::default()
                 },
             );
@@ -520,7 +522,6 @@ fn tree_from_libusb(ctx: &Context) -> rusb::Result<Vec<TreeBus>> {
             busnum: d.dev.busnum,
             device_class: usb::CLASS_HUB,
             speed: "unknown".to_string(),
-            driver: "[unknown]".to_string(),
             synthetic: true,
             ..Default::default()
         });
@@ -541,12 +542,11 @@ fn active_interfaces(dev: &Device) -> Vec<TreeInterface> {
             configuration: config.b_configuration_value as u32,
             ifnum: alt.b_interface_number as u32,
             class: alt.b_interface_class,
-            driver: "[unknown]".to_string(),
         })
         .collect()
 }
 
-/// Run `lsusb -t`.  Returns the process exit status.
+/// Run `exausb -t`.  Returns the process exit status.
 pub fn lsusb_t() -> i32 {
     if sysfs::available() {
         match tree_from_sysfs(SYS_BUS_USB_DEVICES) {
@@ -628,8 +628,7 @@ mod tests {
     }
 
     /// Build a miniature sysfs `bus/usb/devices` tree, laid out like the
-    /// real thing (root hubs are symlinks into the device hierarchy, drivers
-    /// are symlinks).
+    /// real thing (root hubs are symlinks into the device hierarchy).
     fn fake_sysfs() -> std::path::PathBuf {
         use std::os::unix::fs::symlink;
 
@@ -637,17 +636,9 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         let devices = base.join("bus/usb/devices");
         let hcd = base.join("devices/pci0");
-        let drivers = base.join("drivers");
-        for d in [
-            &devices,
-            &hcd,
-            &drivers.join("xhci_hcd"),
-            &drivers.join("hub"),
-            &drivers.join("usbhid"),
-        ] {
+        for d in [&devices, &hcd] {
             fs::create_dir_all(d).unwrap();
         }
-        symlink(drivers.join("xhci_hcd"), hcd.join("driver")).unwrap();
 
         let write = |dir: &std::path::Path, attrs: &[(&str, &str)]| {
             fs::create_dir_all(dir).unwrap();
@@ -681,12 +672,10 @@ mod tests {
 
         write(&devices.join("1-3"), &dev_attrs("2", "4", "480", "1"));
         write(&devices.join("1-3:1.0"), &[("bInterfaceClass", "09")]);
-        symlink(drivers.join("hub"), devices.join("1-3:1.0/driver")).unwrap();
 
         write(&devices.join("1-3.2"), &dev_attrs("5", "0", "12", "2"));
         write(&devices.join("1-3.2:1.1"), &[("bInterfaceClass", "03")]);
         write(&devices.join("1-3.2:1.0"), &[("bInterfaceClass", "03")]);
-        symlink(drivers.join("usbhid"), devices.join("1-3.2:1.0/driver")).unwrap();
 
         write(&devices.join("1-1"), &dev_attrs("3", "0", "480", "1"));
         base
@@ -702,7 +691,6 @@ mod tests {
         assert_eq!(tree.len(), 1);
         let bus = &tree[0];
         assert_eq!((bus.busnum, bus.devnum, bus.maxchild), (1, 1, 4));
-        assert_eq!(bus.driver, "xhci_hcd");
         assert_eq!(bus.speed, "5000");
         assert!(!bus.synthetic);
 
@@ -715,17 +703,24 @@ mod tests {
         let hub = &bus.children[1];
         assert_eq!(hub.name, "1-3");
         assert_eq!(hub.interfaces.len(), 1);
-        assert_eq!(hub.interfaces[0].driver, "hub");
+        assert_eq!(hub.interfaces[0].class, 9);
 
         let hid = &hub.children[0];
         assert_eq!((hid.devnum, hid.portnum, hid.rx_lanes), (5, 2, 2));
         assert_eq!(hid.manufacturer, "Maker Co"); // control chars become spaces
-        let ifs: Vec<_> = hid
-            .interfaces
-            .iter()
-            .map(|i| (i.ifnum, i.class, i.driver.as_str()))
-            .collect();
-        assert_eq!(ifs, [(0, 3, "usbhid"), (1, 3, "[none]")]);
+        let ifs: Vec<_> = hid.interfaces.iter().map(|i| (i.ifnum, i.class)).collect();
+        // Sorted by interface number.
+        assert_eq!(ifs, [(0, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn speeds_and_ports() {
+        assert_eq!(speed_to_str("480", 1, 1), "480M");
+        assert_eq!(speed_to_str("1.5", 0, 0), "1.5M");
+        assert_eq!(speed_to_str("10000", 2, 2), "10000M/x2");
+        assert_eq!(speed_to_str("unknown", 1, 1), "unknown speed");
+        assert_eq!(ports_to_str(0), "");
+        assert_eq!(ports_to_str(4), ", 4 ports");
     }
 
     #[test]

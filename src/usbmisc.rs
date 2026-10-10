@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! Misc USB routines.
 //!
-//! Port of usbutils' `usbmisc.c` (Copyright (C) 2003 Aurelien Jarno).
+//! Derived from usbutils' `usbmisc.c` (Copyright (C) 2003 Aurelien Jarno).
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;

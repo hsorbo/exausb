@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! USB descriptor definitions.
 //!
-//! Port of usbutils' `desc-defs.c` / `desc-defs.h`
+//! Derived from usbutils' `desc-defs.c` / `desc-defs.h`
 //! (Copyright (C) 2017-2018 Michael Drake <michael.drake@codethink.co.uk>).
 //!
 //! Descriptors are described as slices of [`Desc`] field definitions, which

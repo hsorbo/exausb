@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! Command line handling for `lsusb`.
+//! Command line handling for `exausb`.
 
 use std::process::ExitCode;
 
@@ -10,7 +10,7 @@ use crate::usb::Context;
 use crate::{dump, names, tree, usb, usbmisc};
 
 const USAGE: &str = "\
-Usage: lsusb [options]...
+Usage: exausb [options]...
 List USB devices
   -v, --verbose
       Increase verbosity (show descriptors)
@@ -21,7 +21,7 @@ List USB devices
       Show only devices with the specified vendor and
       product ID numbers (in hexadecimal)
   -D device
-      Selects which device lsusb will examine
+      Selects which device exausb will examine
   -t, --tree
       Dump the physical USB device hierarchy as a tree
   -V, --version
@@ -139,15 +139,15 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Options {
             match found {
                 Some((_, c)) if value.is_none() => apply(&mut opts, *c, None),
                 Some((l, _)) => {
-                    eprintln!("lsusb: option '--{l}' doesn't allow an argument");
+                    eprintln!("exausb: option '--{l}' doesn't allow an argument");
                     opts.err += 1;
                 }
                 None if matches.len() > 1 => {
-                    eprintln!("lsusb: option '--{name}' is ambiguous");
+                    eprintln!("exausb: option '--{name}' is ambiguous");
                     opts.err += 1;
                 }
                 None => {
-                    eprintln!("lsusb: unrecognized option '--{name}'");
+                    eprintln!("exausb: unrecognized option '--{name}'");
                     opts.err += 1;
                 }
             }
@@ -163,7 +163,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Options {
                     match optarg {
                         Some(a) => apply(&mut opts, c, Some(a)),
                         None => {
-                            eprintln!("lsusb: option requires an argument -- '{c}'");
+                            eprintln!("exausb: option requires an argument -- '{c}'");
                             opts.err += 1;
                         }
                     }
@@ -171,7 +171,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Options {
                 } else if NO_ARG.contains(c) {
                     apply(&mut opts, c, None);
                 } else {
-                    eprintln!("lsusb: invalid option -- '{c}'");
+                    eprintln!("exausb: invalid option -- '{c}'");
                     opts.err += 1;
                 }
             }
@@ -243,9 +243,9 @@ fn list_devices(ctx: &Context, opts: &Options) -> u8 {
     status
 }
 
-/// Run lsusb with the process' command line arguments.
+/// Run exausb with the process' command line arguments.
 pub fn run() -> ExitCode {
-    // Behave like a C program when the output pipe is closed (`lsusb | head`)
+    // Behave like a C program when the output pipe is closed (`exausb | head`)
     // instead of panicking in println!.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
@@ -254,11 +254,7 @@ pub fn run() -> ExitCode {
     let opts = parse_args(std::env::args().skip(1));
 
     if opts.version {
-        println!(
-            "lsusb ({}) {}",
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        );
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     if opts.err > 0 || opts.help {

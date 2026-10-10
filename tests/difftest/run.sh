@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Differential test: dump the same synthetic descriptors with upstream
-# usbutils' C code and with this port, and compare the output byte for byte.
+# usbutils' C code and with exausb, and compare the output byte for byte.
 #
 # Usage: tests/difftest/run.sh [seed] [count]
 # Needs: a C compiler, curl, python3 and libusb-1.0 (pkg-config).

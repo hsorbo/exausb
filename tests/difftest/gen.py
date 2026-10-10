@@ -182,7 +182,7 @@ def iface_extra(cls, sub, proto):
 
 def avoid_uvc_overreads(blob):
     """Upstream reads one byte past some VideoControl/VideoStreaming
-    descriptors: it sees the next descriptor's first byte, the port sees 0.
+    descriptors: it sees the next descriptor's first byte, exausb sees 0.
     Lengthen those descriptors by a byte so the comparison stays meaningful.
 
     - PROCESSING_UNIT of exactly 9+bControlSize bytes (bmVideoStandards)

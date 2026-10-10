@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! USB name database lookups.
 //!
-//! Port of usbutils' `names.c` (Copyright (C) 1999, 2000 Thomas Sailer,
+//! Derived from usbutils' `names.c` (Copyright (C) 1999, 2000 Thomas Sailer,
 //! Copyright (C) 2013 Tom Gundersen).
 //!
 //! Upstream looks vendor/product/class names up in the udev hwdb, which is
-//! generated from the `usb.ids` file.  udev is Linux-only, so this port uses
+//! generated from the `usb.ids` file.  udev is Linux-only, so exausb uses
 //! `usb.ids` directly: a copy is embedded in the binary (refresh it with
 //! `scripts/update-usb-ids.sh`), and `$USB_IDS` can point at another one.
 //! The remaining tables (HID, audio/video terminals, ...) are compiled in
@@ -29,7 +29,7 @@ pub const USB_IDS_ENV: &str = "USB_IDS";
 /// decoded leniently.
 static BUNDLED_USB_IDS: &[u8] = include_bytes!("../data/usb.ids");
 
-/// Parsed contents of a `usb.ids` file (the parts lsusb uses).
+/// Parsed contents of a `usb.ids` file (the parts exausb uses).
 #[derive(Default, Debug)]
 pub struct UsbIds {
     vendors: HashMap<u16, String>,

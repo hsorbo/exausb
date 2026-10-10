@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! Verbose (`-v`) descriptor dumping.
 //!
-//! Port of the dumping code in usbutils' `lsusb.c`
+//! Derived from the dumping code in usbutils' `lsusb.c`
 //! (Copyright (C) 1999-2001, 2003 Thomas Sailer, Copyright (C) 2003-2005
 //! David Brownell).
 //!
@@ -973,7 +973,7 @@ fn dump_device_status(fd: &Handle, otg: bool, super_speed: bool) {
     }
 }
 
-/// Dump everything lsusb knows about a device (`lsusb -v`).
+/// Dump everything exausb knows about a device (`exausb -v`).
 pub fn dumpdev(dev: &Device) {
     let handle = match dev.open() {
         Ok(h) => Some(h),

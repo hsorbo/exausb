@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-//! A Rust/libusb port of usbutils' `lsusb`.
+//! exausb: list USB devices and dump their descriptors on any platform
+//! libusb supports.  A cross-platform sibling of usbutils' `lsusb`.
 //!
-//! Based on `lsusb.c` and friends from usbutils
+//! Derived from `lsusb.c` and friends from usbutils
 //! (Copyright (C) 1999-2001, 2003 Thomas Sailer, Copyright (C) 2003-2005
 //! David Brownell, and others; see the individual modules).
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //! USB descriptor dumping.
 //!
-//! Port of usbutils' `desc-dump.c`
+//! Derived from usbutils' `desc-dump.c`
 //! (Copyright (C) 2017-2018 Michael Drake <michael.drake@codethink.co.uk>).
 
 use crate::desc_defs::{Desc, DescType, DESC_UNDEFINED};

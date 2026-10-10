@@ -2,7 +2,7 @@
 //! Thin layer over libusb.
 //!
 //! rusb's safe descriptor types decode (and partly hide) the raw descriptor
-//! fields, but lsusb wants to print them verbatim.  This module copies the
+//! fields, but exausb wants to print them verbatim.  This module copies the
 //! raw libusb descriptor structures into owned Rust values and provides a
 //! few helpers for control transfers.
 
